@@ -10,14 +10,45 @@ const BASE = RAW.endsWith("/v1") ? RAW : RAW.replace(/\/$/, "") + "/v1";
 const IMG = (p, size = "w1280") => (p ? `https://image.tmdb.org/t/p/${size}${p}` : null);
 
 export default function Home({ data, error }) {
-  // 1) Sélection des films pour le carrousel (backdrop ou poster)
+  // --- Rattrapage client si SSR échoue (Render endormi) ---
+  const [clientData, setClientData] = useState(data || null);
+  const [clientErr, setClientErr] = useState(error || null);
+
+  useEffect(() => {
+    if (!clientData) {
+      const ctrl = new AbortController();
+
+      const fetchWithRetry = async (tries = 3) => {
+        try {
+          const r = await fetch(`${BASE}/movies/trending?page=1`, { signal: ctrl.signal });
+          const ct = r.headers.get("content-type") || "";
+          if (!r.ok || !ct.includes("application/json")) throw new Error(`status ${r.status}`);
+          const json = await r.json();
+          setClientData(json);
+          setClientErr(null);
+        } catch (e) {
+          if (tries > 1) setTimeout(() => fetchWithRetry(tries - 1), 1500);
+          else setClientErr("fetch_failed");
+        }
+      };
+
+      fetchWithRetry();
+      return () => ctrl.abort();
+    }
+  }, [clientData]);
+
+  // On utilise toujours ces “effective*”
+  const effectiveData = clientData;
+  const effectiveError = clientErr;
+
+  // Carrousel — on prend les films avec image
   const heroItems = useMemo(() => {
-    const list = data?.results || [];
+    const list = effectiveData?.results || [];
     const withImage = list.filter(m => m.backdrop_path || m.poster_path);
     return (withImage.length ? withImage : list).slice(0, 5);
-  }, [data]);
+  }, [effectiveData]);
 
-  // 2) État du carrousel
+  // État carrousel
   const [idx, setIdx] = useState(0);
   const timerRef = useRef(null);
   const AUTOPLAY_MS = 5000;
@@ -25,13 +56,11 @@ export default function Home({ data, error }) {
   useEffect(() => {
     if (!heroItems.length) return;
     clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setIdx(i => (i + 1) % heroItems.length);
-    }, AUTOPLAY_MS);
+    timerRef.current = setInterval(() => setIdx(i => (i + 1) % heroItems.length), AUTOPLAY_MS);
     return () => clearInterval(timerRef.current);
   }, [heroItems.length]);
 
-  const goTo = (i) => {
+  const goTo = i => {
     if (!heroItems.length) return;
     const len = heroItems.length;
     setIdx(((i % len) + len) % len);
@@ -55,12 +84,12 @@ export default function Home({ data, error }) {
     }
   };
 
-  // 3) FOND DIRECTEMENT SUR <section.hero>
+  // Fond du hero en background-image (pas de <Image/>)
   const active = heroItems[idx];
   const activeBg =
     IMG(active?.backdrop_path, "w1280") ||
     IMG(active?.poster_path, "w780") ||
-    ""; // au pire, fond dégradé CSS
+    "";
 
   const title = active?.title || active?.name || "—";
   const year  = active?.release_date?.slice(0, 4) || "";
@@ -75,7 +104,7 @@ export default function Home({ data, error }) {
 
       <SearchBar initialQuery="" placeholder="Rechercher un film..." />
 
-      {/* ===== HERO (fond en background-image sur la section) ===== */}
+      {/* HERO */}
       <section
         className={styles.hero}
         style={activeBg ? { backgroundImage: `url(${activeBg})` } : undefined}
@@ -97,22 +126,18 @@ export default function Home({ data, error }) {
           <div className={styles.heroActions}>
             {active?.id && (
               <Link href={`/movie/${active.id}`}>
-                <a className={styles.ctaPrimary}>▶ Voir le film </a>
+                <a className={styles.ctaPrimary}>▶ Voir le film</a>
               </Link>
             )}
             <a href="#popular" className={styles.ctaGhost}>Découvrir ↓</a>
           </div>
         </div>
-
-        {/* Flèches */}
         {heroItems.length > 1 && (
           <>
             <button className={`${styles.arrow} ${styles.arrowLeft}`} onClick={prev} aria-label="Précédent">‹</button>
             <button className={`${styles.arrow} ${styles.arrowRight}`} onClick={next} aria-label="Suivant">›</button>
           </>
         )}
-
-        {/* Puces */}
         {heroItems.length > 1 && (
           <div className={styles.dots} role="tablist" aria-label="Sélecteur de slide">
             {heroItems.map((_, i) => (
@@ -128,19 +153,22 @@ export default function Home({ data, error }) {
         )}
       </section>
 
-      {/* ===== Section titre ===== */}
+      {/* Titre section */}
       <div className={styles.header} id="popular">
         <div className={styles.icon} />
         <h2 className={styles.title}>Films populaires</h2>
       </div>
 
-      {error && (
-        <p style={{ color: "#ff7676", fontWeight: 600 }}>⚠️ Erreur de chargement ({error})</p>
+      {/* Erreur éventuelle */}
+      {effectiveError && (
+        <p style={{ color: "#ff7676", fontWeight: 600 }}>
+          ⚠️ Erreur de chargement ({effectiveError})
+        </p>
       )}
 
-      {/* ===== Grille ===== */}
+      {/* Grille */}
       <div className={styles.grid}>
-        {(data?.results || []).map((m) => {
+        {(effectiveData?.results || []).map((m) => {
           const poster = m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null;
           const year = m.release_date?.slice(0,4) || "—";
           const note = m.vote_average ? m.vote_average.toFixed(1) : "—";
@@ -172,19 +200,17 @@ export default function Home({ data, error }) {
 }
 
 export async function getServerSideProps() {
+  // SSR normal — si ça échoue (cold start), le client rattrapera.
   try {
     const url = `${BASE}/movies/trending?page=1`;
     const r = await fetch(url);
     const ct = r.headers.get("content-type") || "";
     if (!r.ok || !ct.includes("application/json")) {
-      const txt = await r.text();
-      console.error("❌ Fetch trending failed", "\nURL :", url, "\nStatus :", r.status, "\nCT :", ct, "\nBody :", txt.slice(0, 200));
       return { props: { error: r.status || "not_json", data: null } };
     }
     const data = await r.json();
     return { props: { data } };
-  } catch (e) {
-    console.error("❌ Exception:", e);
+  } catch {
     return { props: { error: "fetch_failed", data: null } };
   }
 }
