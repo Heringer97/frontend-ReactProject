@@ -1,10 +1,10 @@
 // pages/mood.js
-import { useEffect, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import styles from "./mood.module.css";
 import { API_BASE as BASE } from "../lib/config";
 
+// Les humeurs proposées
 const MOODS = [
   { key: "happy", label: "Heureux 😊" },
   { key: "sad", label: "Triste 🥺" },
@@ -15,40 +15,7 @@ const MOODS = [
   { key: "scifi", label: "SF 🚀" },
 ];
 
-export default function MoodPage() {
-  const [mood, setMood] = useState("happy");
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const fetchMood = async (m) => {
-    try {
-      setLoading(true);
-      setErr(null);
-      // 👇 adapte ce chemin si ton backend est différent (ex: /movies/by-mood?mood=)
-      const url = `${BASE}/mood?mood=${encodeURIComponent(m)}&page=1`;
-      const r = await fetch(url);
-      const ct = r.headers.get("content-type") || "";
-      if (!r.ok || !ct.includes("application/json")) throw new Error(`status ${r.status}`);
-      const json = await r.json();
-      setData(json);
-    } catch (e) {
-      setErr("fetch_failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchMood(mood);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const onPick = (m) => {
-    setMood(m);
-    fetchMood(m);
-  };
-
+export default function MoodPage({ mood, data, error }) {
   return (
     <div className={styles.page}>
       <Head><title>Films selon l’humeur</title></Head>
@@ -57,18 +24,15 @@ export default function MoodPage() {
 
       <div className={styles.chips}>
         {MOODS.map((m) => (
-          <button
-            key={m.key}
-            className={`${styles.chip} ${mood === m.key ? styles.active : ""}`}
-            onClick={() => onPick(m.key)}
-          >
-            {m.label}
-          </button>
+          <Link key={m.key} href={`/mood?m=${encodeURIComponent(m.key)}`}>
+            <a className={`${styles.chip} ${mood === m.key ? styles.active : ""}`}>
+              {m.label}
+            </a>
+          </Link>
         ))}
       </div>
 
-      {loading && <p>Chargement…</p>}
-      {err && <p className={styles.error}>⚠️ Failed to fetch</p>}
+      {error && <p className={styles.error}>⚠️ Failed to fetch ({error})</p>}
 
       <div className={styles.grid}>
         {(data?.results || []).map((mv) => {
@@ -104,4 +68,23 @@ export default function MoodPage() {
       </p>
     </div>
   );
+}
+
+// 👉 Requête côté serveur (pas de CORS)
+export async function getServerSideProps(ctx) {
+  const mood = (ctx.query.m || "happy").toString();
+
+  try {
+    // ⚠️ adapte ce chemin si ton backend a un autre endpoint
+    const url = `${BASE}/mood?mood=${encodeURIComponent(mood)}&page=1`;
+    const r = await fetch(url);
+    const ct = r.headers.get("content-type") || "";
+    if (!r.ok || !ct.includes("application/json")) {
+      return { props: { mood, error: r.status || "not_json", data: null } };
+    }
+    const data = await r.json();
+    return { props: { mood, data } };
+  } catch {
+    return { props: { mood, error: "fetch_failed", data: null } };
+  }
 }
