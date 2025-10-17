@@ -4,7 +4,7 @@ import Link from "next/link";
 import styles from "./mood.module.css";
 import { API_BASE as BASE } from "../lib/config";
 
-// Les humeurs proposées
+// Humeurs proposées (les clés sont passées à l'API)
 const MOODS = [
   { key: "happy", label: "Heureux 😊" },
   { key: "sad", label: "Triste 🥺" },
@@ -15,7 +15,7 @@ const MOODS = [
   { key: "scifi", label: "SF 🚀" },
 ];
 
-export default function MoodPage({ mood, data, error }) {
+export default function MoodPage({ mood, data, error, tried }) {
   return (
     <div className={styles.page}>
       <Head><title>Films selon l’humeur</title></Head>
@@ -32,7 +32,19 @@ export default function MoodPage({ mood, data, error }) {
         ))}
       </div>
 
-      {error && <p className={styles.error}>⚠️ Failed to fetch ({error})</p>}
+      {error && (
+        <div className={styles.error}>
+          ⚠️ Failed to fetch ({error})
+          {tried?.length ? (
+            <details style={{ marginTop: 8 }}>
+              <summary>Endpoints testés</summary>
+              <ul>
+                {tried.map((u) => <li key={u}><code>{u}</code></li>)}
+              </ul>
+            </details>
+          ) : null}
+        </div>
+      )}
 
       <div className={styles.grid}>
         {(data?.results || []).map((mv) => {
@@ -70,21 +82,32 @@ export default function MoodPage({ mood, data, error }) {
   );
 }
 
-// 👉 Requête côté serveur (pas de CORS)
+// 👉 SSR : on teste plusieurs endpoints jusqu'à trouver celui qui marche
 export async function getServerSideProps(ctx) {
   const mood = (ctx.query.m || "happy").toString();
 
-  try {
-    // ⚠️ adapte ce chemin si ton backend a un autre endpoint
-    const url = `${BASE}/mood?mood=${encodeURIComponent(mood)}&page=1`;
-    const r = await fetch(url);
-    const ct = r.headers.get("content-type") || "";
-    if (!r.ok || !ct.includes("application/json")) {
-      return { props: { mood, error: r.status || "not_json", data: null } };
-    }
-    const data = await r.json();
-    return { props: { mood, data } };
-  } catch {
-    return { props: { mood, error: "fetch_failed", data: null } };
+  // Liste d'endpoints candidats (les plus fréquents)
+  const CANDIDATES = [
+    (m) => `${BASE}/mood?mood=${encodeURIComponent(m)}&page=1`,
+    (m) => `${BASE}/movies/mood?mood=${encodeURIComponent(m)}&page=1`,
+    (m) => `${BASE}/movies/by-mood?mood=${encodeURIComponent(m)}&page=1`,
+    (m) => `${BASE}/recommendations/mood?mood=${encodeURIComponent(m)}&page=1`,
+  ];
+
+  const tried = [];
+  for (const buildUrl of CANDIDATES) {
+    const url = buildUrl(mood);
+    tried.push(url);
+    try {
+      const r = await fetch(url);
+      const ct = r.headers.get("content-type") || "";
+      if (r.ok && ct.includes("application/json")) {
+        const data = await r.json();
+        return { props: { mood, data, tried } };
+      }
+    } catch (_) { /* ignore et on teste le suivant */ }
   }
+
+  // Rien n'a répondu OK
+  return { props: { mood, data: null, error: "404", tried } };
 }
